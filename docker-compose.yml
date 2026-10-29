@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: thucourt
+      POSTGRES_USER: thucourt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local}
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thucourt -d thucourt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/backend/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://thucourt:${POSTGRES_PASSWORD:-change-me-local}@db:5432/thucourt
+      REDIS_URL: redis://redis:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      DEBUG: "false"
+      DEMO_MODE: "false"
+    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 90"
+    volumes: ["media_data:/app/private_media"]
+    depends_on: { db: { condition: service_healthy }, redis: { condition: service_healthy } }
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/backend/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://thucourt:${POSTGRES_PASSWORD:-change-me-local}@db:5432/thucourt
+      REDIS_URL: redis://redis:6379/0
+      DEBUG: "false"
+      DEMO_MODE: "false"
+      CELERY_TASK_ALWAYS_EAGER: "false"
+    command: celery -A config worker -l info --concurrency=2
+    volumes: ["media_data:/app/private_media"]
+    depends_on: { backend: { condition: service_started }, redis: { condition: service_healthy } }
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/frontend/Dockerfile
+    ports: ["8080:80"]
+    depends_on: [backend]
+volumes:
+  postgres_data:
+  media_data:
